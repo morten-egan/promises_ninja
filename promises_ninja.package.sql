@@ -9,5 +9,14 @@ as
   */
   npg_version         varchar2(250) := 0.0.1;
 
+  /** The promise function returning an active promise
+  * @author Morten Egan
+  * @return promise_o The promise object.
+  */
+  function promise (
+    
+  )
+  return promise_o;
+
 end promises_ninja;
 /
