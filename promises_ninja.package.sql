@@ -11,6 +11,7 @@ as
 
   type promise_o is object (
     aa23        varchar2(20)
+    ,
   )
 
   /** The promise function returning an active promise
