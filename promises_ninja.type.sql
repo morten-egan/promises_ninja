@@ -36,12 +36,18 @@ create type promise as object (
   -- validate, where we validate all the settings so far. If anything is wrong, we set to failed.
   , member procedure validate_p (self in out nocopy promise)
   -- done.
-  , member procedure done_p (on_fullfilled varchar2 default null, on_rejected varchar2 default null)
+  , member procedure done_p (self in out promise, on_fullfilled varchar2 default null, on_rejected varchar2 default null)
   -- then, where we actually care about the result. Return is the pointer to the data. Callers responsibility to check if completed.
-  , member function then_p (on_fullfilled varchar2 default null, on_rejected varchar2 default null) return promise
+  , member function then_p (self in out promise, on_fullfilled varchar2 default null, on_rejected varchar2 default null) return promise
   , member function get_promise_name return varchar2
   , member procedure execute_promise(self in out nocopy promise)
   , member procedure check_and_set_value(self in out promise)
+  -- Resolve procedures
+  , member procedure resolve(self in out promise, resolved_val promise)
+  , member procedure resolve(self in out promise, resolved_val number)
+  , member procedure resolve(self in out promise, resolved_val varchar2)
+  -- Reject procedure
+  , member procedure reject(self in out promise, rejection varchar2)
 
   /*
   * Getters
@@ -51,6 +57,13 @@ create type promise as object (
   -- datatype specific getters.
   , member function getvalue_number(self in out promise) return number
   , member function getvalue_varchar(self in out promise) return varchar2
+
+  /*
+  * Helper utilities
+  */
+  , member function on_is_function(function_name varchar2) return boolean
+  , member function get_exec_job_code return varchar2
+  , member function get_then_job_code(on_fullfilled varchar2, on_rejected varchar2, new_promise_name varchar2) return varchar2
 )
 not final;
 /

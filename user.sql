@@ -12,3 +12,4 @@ grant aq_administrator_role to promises_ninja;
 grant create job to promises_ninja;
 grant execute on dbms_aqadm to promises_ninja;
 grant execute on dbms_aq to promises_ninja;
+grant create procedure to promises_ninja;
