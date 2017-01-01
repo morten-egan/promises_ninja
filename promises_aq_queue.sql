@@ -18,3 +18,15 @@ begin
 
 end;
 /
+
+begin
+  dbms_aqadm.add_subscriber(
+    queue_name            =>    'promise_job_queue'
+    , subscriber          =>    sys.aq$_agent(
+                                  'JOBSUBT'
+                                  , null
+                                  , null
+                                )
+  );
+end;
+/

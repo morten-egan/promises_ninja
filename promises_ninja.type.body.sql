@@ -345,6 +345,7 @@ create or replace type body promise as
           l_dequeue_options.dequeue_mode := dbms_aq.browse;
           l_dequeue_options.wait := dbms_aq.no_wait;
           l_dequeue_options.visibility := dbms_aq.immediate;
+          l_dequeue_options.consumer_name := 'RESULTSUB';
           if l_first_dequeue then
             l_dequeue_options.navigation := dbms_aq.first_message;
           else
