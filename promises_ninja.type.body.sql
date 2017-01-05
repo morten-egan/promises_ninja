@@ -12,6 +12,7 @@ create or replace type body promise as
     self.typeval := 0;
     self.o_executor := null;
     self.o_execute := 0;
+    self.chain_size := 0;
 
     return;
 
@@ -32,6 +33,7 @@ create or replace type body promise as
     self.o_executor := executor;
     self.o_executor_typeval := 0;
     self.o_execute := 0;
+    self.chain_size := 0;
 
     self.validate_p();
 
@@ -58,6 +60,7 @@ create or replace type body promise as
     self.o_executor_typeval := 1;
     self.o_executor_val := sys.anydata.convertnumber(executor_val);
     self.o_execute := 0;
+    self.chain_size := 0;
 
     self.validate_p();
 
@@ -84,6 +87,7 @@ create or replace type body promise as
     self.o_executor_typeval := 2;
     self.o_executor_val := sys.anydata.convertvarchar2(executor_val);
     self.o_execute := 0;
+    self.chain_size := 0;
 
     self.validate_p();
 
@@ -195,30 +199,32 @@ create or replace type body promise as
 
   end on_is_function;
 
-  member procedure done_p (
+  member procedure then_p (
     self                    in out      promise
+    , ref_promise           in out      promise
     , on_fullfilled                     varchar2    default null
     , on_rejected                       varchar2    default null
   )
 
   as
 
-    new_promise         promise;
-
   begin
 
-    -- First check if promise has been validated.
-    -- Do not allow an promise that has not been validated to be executed.
-    if self.o_execute > 0 then
-      -- Just re-use the then_p code, except we do not return anything.
-      new_promise := self.then_p(on_fullfilled, on_rejected);
+    if self.chain_size = 0 then
+      ref_promise := self.then_f(on_fullfilled, on_rejected);
     else
-      raise_application_error(-20042, 'cannot call done on promise that is not validated');
+      if ref_promise is null then
+        -- Attach equal thenable to original promise (will start independent chain)
+        ref_promise := self.then_f(on_fullfilled, on_rejected);
+      else
+        -- Add to chain of promises.
+        ref_promise := ref_promise.then_f(on_fullfilled, on_rejected);
+      end if;
     end if;
 
-  end done_p;
+  end then_p;
 
-  member function then_p (
+  member function then_f (
     self                  in out      promise
     , on_fullfilled                   varchar2      default null
     , on_rejected                     varchar2      default null
@@ -229,6 +235,7 @@ create or replace type body promise as
 
     new_promise                 promise;
     l_anonymous_plsql_block     varchar2(32000);
+    l_thenable_result           promise_result;
 
   begin
 
@@ -241,6 +248,8 @@ create or replace type body promise as
 
       -- Poll for the answer and set if available.
       self.check_and_set_value;
+
+      self.chain_size := self.chain_size + 1;
 
       if self.state = 'fulfilled' then
         -- We already have the final result of the promise.
@@ -276,26 +285,24 @@ create or replace type body promise as
         -- Here we should setup a job for either on_fulfilled, on_rejected or both.
         -- (One physical job, with a compounded block to handle all).
         l_anonymous_plsql_block := self.get_then_job_code(on_fullfilled, on_rejected, new_promise.promise_name);
-        dbms_scheduler.create_job (
-          job_name              =>      new_promise.promise_name || '_J'
-          , job_type            =>      'PLSQL_BLOCK'
-          , job_action          =>      l_anonymous_plsql_block
-          , start_date          =>      systimestamp
-          , event_condition     =>      'tab.user_data.promise_name = ''' || self.promise_name || ''''
-          , queue_spec          =>      'promise_job_queue'
-          , enabled             =>      true
-        );
-        -- When we have built the anonymous plsql and submitted the job
+        dbms_output.put_line('Length is: ' || to_char(length(l_anonymous_plsql_block)));
+        -- TODO this is where we should put the new promise as a promise result in the asynch queue but with status pending
+        -- TODO and the thenable code in the promise result object, along with the order and thenable status.
+        -- TODO Lookup promise result valtype here and set correctly in new_promise.
+        l_thenable_result := promise_result(new_promise.promise_name, 'pending', 1, null, self.promise_name, self.chain_size, l_anonymous_plsql_block);
+        self.result_enqueue('promise_async_queue', l_thenable_result);
+        -- When we have built the anonymous plsql and enqueued the message
         -- we have also automatically validated the new promise. Set to validated.
         new_promise.o_execute := 1;
       end if;
 
+      new_promise.typeval := 2;
       return new_promise;
     else
       raise_application_error(-20042, 'cannot call then on promise that is not validated');
     end if;
 
-  end then_p;
+  end then_f;
 
   member procedure execute_promise(
     self in out nocopy promise
@@ -345,7 +352,6 @@ create or replace type body promise as
           l_dequeue_options.dequeue_mode := dbms_aq.browse;
           l_dequeue_options.wait := dbms_aq.no_wait;
           l_dequeue_options.visibility := dbms_aq.immediate;
-          l_dequeue_options.consumer_name := 'RESULTSUB';
           if l_first_dequeue then
             l_dequeue_options.navigation := dbms_aq.first_message;
           else
@@ -388,6 +394,58 @@ create or replace type body promise as
 
   end check_and_set_value;
 
+  member procedure result_enqueue(
+    self              in out    promise
+    , queue_name                varchar2
+    , queue_message             promise_result
+  )
+
+  as
+
+    l_enqueue_options     dbms_aq.enqueue_options_t;
+    l_message_properties  dbms_aq.message_properties_t;
+    l_message_recipients  dbms_aq.aq$_recipient_list_t;
+    l_message_handle      raw(16);
+
+  begin
+
+    dbms_aq.enqueue(
+      queue_name            =>    queue_name
+      , enqueue_options     =>    l_enqueue_options
+      , message_properties  =>    l_message_properties
+      , payload             =>    queue_message
+      , msgid               =>    l_message_handle
+    );
+    commit;
+
+  end result_enqueue;
+
+  member procedure job_enqueue(
+    self              in out    promise
+    , queue_name                varchar2
+    , queue_message             promise_job_notify
+  )
+
+  as
+
+    l_enqueue_options     dbms_aq.enqueue_options_t;
+    l_message_properties  dbms_aq.message_properties_t;
+    l_message_recipients  dbms_aq.aq$_recipient_list_t;
+    l_message_handle      raw(16);
+
+  begin
+
+    dbms_aq.enqueue(
+      queue_name            =>    queue_name
+      , enqueue_options     =>    l_enqueue_options
+      , message_properties  =>    l_message_properties
+      , payload             =>    queue_message
+      , msgid               =>    l_message_handle
+    );
+    commit;
+
+  end job_enqueue;
+
   member procedure resolve(
     self              in out    promise
     , resolved_val              promise
@@ -403,6 +461,8 @@ create or replace type body promise as
         self.typeval := resolved_val.typeval;
         self.val := resolved_val.val;
         self.state := 'fulfilled';
+        self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
+        self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
       elsif resolved_val.state = 'rejected' then
         raise_application_error(-20042, 'cannot resolve a promise with another rejected promise');
       else
@@ -428,6 +488,8 @@ create or replace type body promise as
       self.state := 'fulfilled';
       self.typeval := 1;
       self.val := sys.anydata.convertnumber(resolved_val);
+      self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
+      self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
     else
       raise_application_error(-20042, 'promises cannot be resolved if already resolved or rejected');
     end if;
@@ -448,6 +510,8 @@ create or replace type body promise as
       self.state := 'fulfilled';
       self.typeval := 2;
       self.val := sys.anydata.convertvarchar2(resolved_val);
+      self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
+      self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
     else
       raise_application_error(-20042, 'promises cannot be resolved if already resolved or rejected');
     end if;
@@ -468,6 +532,8 @@ create or replace type body promise as
       self.state := 'rejected';
       self.typeval := 2;
       self.val := sys.anydata.convertvarchar2(rejection);
+      self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'FAILURE', self.typeval, self.val, null, null, null));
+      self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'FAILURE'));
     else
       raise_application_error(-20042, 'promises cannot be rejected if already resolved or rejected');
     end if;
@@ -541,6 +607,33 @@ create or replace type body promise as
 
   end getvalue_varchar;
 
+  member function getanyvalue(self in out promise)
+  return varchar2
+
+  as
+
+    l_ret_val           varchar2(4000);
+    l_num               number;
+    l_date              date;
+    l_extracted_val     sys.anydata := self.val;
+
+  begin
+
+    case l_extracted_val.gettypename
+      when 'SYS.NUMBER' then
+        if (l_extracted_val.getNumber(l_num) = dbms_types.success ) then l_ret_val := l_num; end if;
+      when 'SYS.DATE' then
+        if (l_extracted_val.getDate(l_date) = dbms_types.success ) then l_ret_val := l_date; end if;
+      when 'SYS.VARCHAR2' then
+        if (l_extracted_val.getVarchar2(l_ret_val) = dbms_types.success ) then null; end if;
+      else
+        l_ret_val := '** unknown value type **';
+    end case;
+
+    return l_ret_val;
+
+  end getanyvalue;
+
   member function get_exec_job_code
   return varchar2
 
@@ -551,13 +644,13 @@ create or replace type body promise as
   begin
 
     l_anonymous_plsql_block := 'declare
-      l_full_error          varchar2(4000);
-      l_enqueue_options     dbms_aq.enqueue_options_t;
-      l_message_properties  dbms_aq.message_properties_t;
-      l_message_recipients  dbms_aq.aq$_recipient_list_t;
-      l_message_handle      raw(16);
-      l_queue_message       promise_result;
-      l_promise_result      ';
+      l_fe varchar2(4000);
+      l_eo dbms_aq.enqueue_options_t;
+      l_mp dbms_aq.message_properties_t;
+      l_mh raw(16);
+      l_qm promise_result;
+      l_jm promise_job_notify;
+      l_pr ';
     if self.typeval = 1 then
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'number;';
     elsif self.typeval = 2 then
@@ -565,7 +658,7 @@ create or replace type body promise as
     end if;
     if self.o_executor_typeval > 0 then
       l_anonymous_plsql_block := l_anonymous_plsql_block || '
-      l_executor_var        ';
+      l_ev ';
       if self.o_executor_typeval = 1 then
         l_anonymous_plsql_block := l_anonymous_plsql_block || 'number := ' || to_char(sys.anydata.accessNumber(self.o_executor_val)) || ';';
       elsif self.o_executor_typeval = 2 then
@@ -574,39 +667,54 @@ create or replace type body promise as
     end if;
     l_anonymous_plsql_block := l_anonymous_plsql_block || '
       begin
-        l_promise_result := ';
+        l_pr := ';
     if self.o_executor_typeval > 0 then
-      l_anonymous_plsql_block := l_anonymous_plsql_block || self.o_executor || '(l_executor_var);';
+      l_anonymous_plsql_block := l_anonymous_plsql_block || self.o_executor || '(l_ev);';
     else
       l_anonymous_plsql_block := l_anonymous_plsql_block || self.o_executor || ';';
     end if;
     l_anonymous_plsql_block := l_anonymous_plsql_block || '
-        l_queue_message := promise_result';
+        l_qm := promise_result';
     if self.typeval = 1 then
-      l_anonymous_plsql_block := l_anonymous_plsql_block || '(''' || self.promise_name || ''', ''SUCCESS'', 1, sys.anydata.convertnumber(l_promise_result));';
+      l_anonymous_plsql_block := l_anonymous_plsql_block || '(''' || self.promise_name || ''', ''SUCCESS'', 1, sys.anydata.convertnumber(l_pr), null, null, null);';
     elsif self.typeval = 2 then
-      l_anonymous_plsql_block := l_anonymous_plsql_block || '(''' || self.promise_name || ''', ''SUCCESS'', 2, sys.anydata.convertvarchar2(l_promise_result));';
+      l_anonymous_plsql_block := l_anonymous_plsql_block || '(''' || self.promise_name || ''', ''SUCCESS'', 2, sys.anydata.convertvarchar2(l_pr), null, null, null);';
     end if;
     l_anonymous_plsql_block := l_anonymous_plsql_block || '
+        l_jm := promise_job_notify(''' || self.promise_name || ''', ''SUCCESS'');
         dbms_aq.enqueue(
-          queue_name            =>    ''promise_async_queue''
-          , enqueue_options     =>    l_enqueue_options
-          , message_properties  =>    l_message_properties
-          , payload             =>    l_queue_message
-          , msgid               =>    l_message_handle
+          queue_name => ''promise_async_queue''
+          , enqueue_options => l_eo
+          , message_properties => l_mp
+          , payload => l_qm
+          , msgid => l_mh
+        );
+        dbms_aq.enqueue(
+          queue_name => ''promise_job_queue''
+          , enqueue_options => l_eo
+          , message_properties => l_mp
+          , payload => l_jm
+          , msgid => l_mh
         );
         commit;
-
         exception
           when others then
-            l_full_error := SQLCODE || ''-'' || SQLERRM;
-            l_queue_message := promise_result(''' || self.promise_name || ''', ''FAILURE'', 2, sys.anydata.convertvarchar2(l_full_error));
+            l_fe := SQLCODE || ''-'' || SQLERRM;
+            l_qm := promise_result(''' || self.promise_name || ''', ''FAILURE'', 2, sys.anydata.convertvarchar2(l_fe), null, null, null);
+            l_jm := promise_job_notify(''' || self.promise_name || ''', ''FAILURE'');
             dbms_aq.enqueue(
-              queue_name            =>    ''promise_async_queue''
-              , enqueue_options     =>    l_enqueue_options
-              , message_properties  =>    l_message_properties
-              , payload             =>    l_queue_message
-              , msgid               =>    l_message_handle
+              queue_name => ''promise_async_queue''
+              , enqueue_options => l_eo
+              , message_properties => l_mp
+              , payload => l_qm
+              , msgid => l_mh
+            );
+            dbms_aq.enqueue(
+              queue_name => ''promise_job_queue''
+              , enqueue_options => l_eo
+              , message_properties => l_mp
+              , payload => l_jm
+              , msgid => l_mh
             );
             commit;
       end;';
@@ -663,32 +771,29 @@ create or replace type body promise as
     end if;
 
     l_anonymous_plsql_block := 'declare
-      -- Dequeue variables
-      l_d_promise_result          promise_result;
-      l_dequeue_options           dbms_aq.dequeue_options_t;
-      l_d_message_properties      dbms_aq.message_properties_t;
-      l_first_dequeue             boolean := true;
-      l_d_message_handle          raw(16);
-      l_d_check_name              varchar2(30) := '''|| self.promise_name ||''';
-      -- Exceptions
-      l_exception_timeout         exception;
-      pragma exception_init(l_exception_timeout, -25228);
-      l_full_error                varchar2(4000);
-      -- Enqueue variables.
-      l_enqueue_options           dbms_aq.enqueue_options_t;
-      l_e_message_properties      dbms_aq.message_properties_t;
-      l_e_message_handle          raw(16);
-      l_e_promise_result          promise_result;
-      -- Call variables.
-      l_promise_output_error      varchar2(4000);
-      l_promise_output            ';
+      l_dpr promise_result;
+      l_do dbms_aq.dequeue_options_t;
+      l_dmp dbms_aq.message_properties_t;
+      l_fd boolean := true;
+      l_dmh raw(16);
+      l_dcn varchar2(30) := '''|| self.promise_name ||''';
+      l_et exception;
+      pragma exception_init(l_et, -25228);
+      l_fe varchar2(4000);
+      l_eo dbms_aq.enqueue_options_t;
+      l_emp dbms_aq.message_properties_t;
+      l_emh raw(16);
+      l_epr promise_result;
+      l_jqm promise_job_notify;
+      l_poe varchar2(4000);
+      l_po ';
     if self.typeval = 1 then
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'number;';
     elsif self.typeval = 2 then
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'varchar2(32000);';
     end if;
     l_anonymous_plsql_block := l_anonymous_plsql_block ||'
-      l_on_fullfill_result        ';
+      l_ofr ';
     if l_on_fullfilled_output_type = 1 then
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'number;';
     elsif l_on_fullfilled_output_type = 2 then
@@ -697,7 +802,7 @@ create or replace type body promise as
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'varchar2(32000);';
     end if;
     l_anonymous_plsql_block := l_anonymous_plsql_block || '
-      l_on_rejected_result        ';
+      l_orr ';
     if l_on_rejected_output_type = 1 then
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'number;';
     elsif l_on_rejected_output_type = 2 then
@@ -707,98 +812,109 @@ create or replace type body promise as
     end if;
     l_anonymous_plsql_block := l_anonymous_plsql_block || '
     begin
-      -- First we need to fetch the message with the result. We know it is there.
       begin
         loop
-          l_dequeue_options.dequeue_mode := dbms_aq.browse;
-          l_dequeue_options.wait := dbms_aq.no_wait;
-          l_dequeue_options.visibility := dbms_aq.immediate;
-          if l_first_dequeue then
-            l_dequeue_options.navigation := dbms_aq.first_message;
+          l_do.dequeue_mode := dbms_aq.browse;
+          l_do.wait := dbms_aq.no_wait;
+          l_do.visibility := dbms_aq.immediate;
+          if l_fd then
+            l_do.navigation := dbms_aq.first_message;
           else
-            l_dequeue_options.navigation := dbms_aq.next_message;
+            l_do.navigation := dbms_aq.next_message;
           end if;
           dbms_aq.dequeue(
-            queue_name              =>    ''promise_async_queue''
-            , dequeue_options       =>    l_dequeue_options
-            , message_properties    =>    l_d_message_properties
-            , payload               =>    l_d_promise_result
-            , msgid                 =>    l_d_message_handle
+            queue_name => ''promise_async_queue''
+            , dequeue_options => l_do
+            , message_properties => l_dmp
+            , payload => l_dpr
+            , msgid => l_dmh
           );
-          if l_first_dequeue then
-            l_first_dequeue := false;
+          if l_fd then
+            l_fd := false;
           end if;
-          if l_d_promise_result.promise_name = l_d_check_name then
-            -- We have the right promise value. Use as input to new promise call.
-            if l_d_promise_result.promise_result = ''SUCCESS'' then
-              l_promise_output := ';
+          if l_dpr.promise_name = l_dcn then
+            if l_dpr.promise_result = ''SUCCESS'' then
+              l_po := ';
       if self.typeval = 1 then
-        l_anonymous_plsql_block := l_anonymous_plsql_block || 'sys.anydata.accessNumber(l_d_promise_result.promise_value);';
+        l_anonymous_plsql_block := l_anonymous_plsql_block || 'sys.anydata.accessNumber(l_dpr.promise_value);';
       elsif self.typeval = 2 then
-        l_anonymous_plsql_block := l_anonymous_plsql_block || 'sys.anydata.accessVarchar2(l_d_promise_result.promise_value);';
+        l_anonymous_plsql_block := l_anonymous_plsql_block || 'sys.anydata.accessVarchar2(l_dpr.promise_value);';
       end if;
       l_anonymous_plsql_block := l_anonymous_plsql_block || '
             else
-              l_promise_output_error := sys.anydata.accessVarchar2(l_d_promise_result.promise_value);
+              l_poe := sys.anydata.accessVarchar2(l_dpr.promise_value);
             end if;
-            -- We have what we need. Exit loop
             exit;
           end if;
         end loop;
       exception
-        when l_exception_timeout then
+        when l_et then
           null;
       end;
-      -- Now we have the result. Run either fulfill or reject depending on result.';
+      ';
       if on_fullfilled is not null then
         l_anonymous_plsql_block := l_anonymous_plsql_block || '
-      if l_d_promise_result.promise_result = ''SUCCESS'' then
-        l_on_fullfill_result := '|| on_fullfilled ||'(l_promise_output);
-        l_e_promise_result := promise_result';
+      if l_dpr.promise_result = ''SUCCESS'' then
+        l_ofr := '|| on_fullfilled ||'(l_po);
+        l_epr := promise_result';
         if l_on_fullfilled_output_type = 1 then
-          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 1, sys.anydata.convertnumber(l_on_fullfill_result));';
+          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 1, sys.anydata.convertnumber(l_ofr), null, null, null);';
         elsif l_on_fullfilled_output_type = 2 then
-          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 2, sys.anydata.convertvarchar2(l_on_fullfill_result));';
+          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 2, sys.anydata.convertvarchar2(l_ofr), null, null, null);';
         end if;
         l_anonymous_plsql_block := l_anonymous_plsql_block || '
+        l_jqm := promise_job_notify(''' || new_promise_name || ''', ''SUCCESS'');
       end if;
       ';
       end if;
       if on_rejected is not null then
         l_anonymous_plsql_block := l_anonymous_plsql_block || '
-      if l_d_promise_result.promise_result = ''FAILURE'' then
-        l_on_rejected_result := '|| on_rejected ||'(l_promise_output);
-        l_e_promise_result := promise_result';
+      if l_dpr.promise_result = ''FAILURE'' then
+        l_orr := '|| on_rejected ||'(l_po);
+        l_epr := promise_result';
         if l_on_rejected_output_type = 1 then
-          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 1, sys.anydata.convertnumber(l_on_rejected_result));';
+          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 1, sys.anydata.convertnumber(l_orr), null, null, null);';
         elsif l_on_rejected_output_type = 2 then
-          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 2, sys.anydata.convertvarchar2(l_on_rejected_result));';
+          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 2, sys.anydata.convertvarchar2(l_orr), null, null, null);';
         end if;
         l_anonymous_plsql_block := l_anonymous_plsql_block || '
+        l_jqm := promise_job_notify(''' || new_promise_name || ''', ''SUCCESS'');
       end if;';
       end if;
-
       l_anonymous_plsql_block := l_anonymous_plsql_block || '
-      -- Enqueue the result message.
       dbms_aq.enqueue(
-        queue_name            =>    ''promise_async_queue''
-        , enqueue_options     =>    l_enqueue_options
-        , message_properties  =>    l_e_message_properties
-        , payload             =>    l_e_promise_result
-        , msgid               =>    l_e_message_handle
+        queue_name => ''promise_async_queue''
+        , enqueue_options => l_eo
+        , message_properties => l_emp
+        , payload => l_epr
+        , msgid => l_emh
+      );
+      dbms_aq.enqueue(
+        queue_name => ''promise_job_queue''
+        , enqueue_options => l_eo
+        , message_properties => l_emp
+        , payload => l_jqm
+        , msgid => l_emh
       );
       commit;
-
       exception
         when others then
-          l_full_error := SQLCODE || ''-'' || SQLERRM;
-          l_e_promise_result := promise_result(''' || new_promise_name || ''', ''FAILURE'', 2, sys.anydata.convertvarchar2(l_full_error));
+          l_fe := SQLCODE || ''-'' || SQLERRM;
+          l_epr := promise_result(''' || new_promise_name || ''', ''FAILURE'', 2, sys.anydata.convertvarchar2(l_fe), null, null, null);
+          l_jqm := promise_job_notify(''' || new_promise_name || ''', ''FAILURE'');
           dbms_aq.enqueue(
-            queue_name            =>    ''promise_async_queue''
-            , enqueue_options     =>    l_enqueue_options
-            , message_properties  =>    l_e_message_properties
-            , payload             =>    l_e_promise_result
-            , msgid               =>    l_e_message_handle
+            queue_name => ''promise_async_queue''
+            , enqueue_options => l_eo
+            , message_properties => l_emp
+            , payload => l_epr
+            , msgid => l_emh
+          );
+          dbms_aq.enqueue(
+            queue_name => ''promise_job_queue''
+            , enqueue_options => l_eo
+            , message_properties => l_emp
+            , payload => l_jqm
+            , msgid => l_emh
           );
           commit;
     end;';
