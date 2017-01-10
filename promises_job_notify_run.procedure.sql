@@ -11,6 +11,9 @@ as
   l_promise_result      promise_result;
 
   -- Exceptions
+  l_doubledeq_exception exception;
+  pragma exception_init(l_doubledeq_exception, -25263);
+
   l_exception_timeout   exception;
   pragma exception_init(l_exception_timeout, -25228);
 
@@ -41,7 +44,7 @@ begin
       l_first_dequeue := false;
     end if;
 
-    if l_promise_result.thenable_status = event_message.promise_name then
+    if l_promise_result.thenable_status = event_message.promise_name and l_promise_result.promise_result = 'pending' then
       -- We should dequeue for remove, and execute thenable as job.
       -- Dequeue directly using the msgid.
       l_dequeue_options.dequeue_mode := dbms_aq.remove;
@@ -69,6 +72,8 @@ begin
 
   exception
     when l_exception_timeout then
+      null;
+    when l_doubledeq_exception then
       null;
 
 end promise_job_notify_run;

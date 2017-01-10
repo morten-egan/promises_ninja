@@ -224,6 +224,20 @@ create or replace type body promise as
 
   end then_p;
 
+  member function catch (
+    self                  in out      promise
+    , on_rejected                     varchar2
+  )
+  return promise
+
+  as
+
+  begin
+
+    return self.then_f(null, on_rejected);
+
+  end catch;
+
   member function then_f (
     self                  in out      promise
     , on_fullfilled                   varchar2      default null
@@ -285,7 +299,6 @@ create or replace type body promise as
         -- Here we should setup a job for either on_fulfilled, on_rejected or both.
         -- (One physical job, with a compounded block to handle all).
         l_anonymous_plsql_block := self.get_then_job_code(on_fullfilled, on_rejected, new_promise.promise_name);
-        dbms_output.put_line('Length is: ' || to_char(length(l_anonymous_plsql_block)));
         -- TODO this is where we should put the new promise as a promise result in the asynch queue but with status pending
         -- TODO and the thenable code in the promise result object, along with the order and thenable status.
         -- TODO Lookup promise result valtype here and set correctly in new_promise.
@@ -296,7 +309,7 @@ create or replace type body promise as
         new_promise.o_execute := 1;
       end if;
 
-      new_promise.typeval := 2;
+      new_promise.typeval := get_function_return(on_fullfilled);
       return new_promise;
     else
       raise_application_error(-20042, 'cannot call then on promise that is not validated');
@@ -378,10 +391,12 @@ create or replace type body promise as
               -- self.set_state('fulfilled', l_promise_result.promise_value);
               self.state := 'fulfilled';
               self.val := l_promise_result.promise_value;
+              self.typeval := l_promise_result.promise_typeval;
             elsif l_promise_result.promise_result = 'FAILURE' then
               -- Set state to rejected and set the rejection result.
               self.state := 'rejected';
               self.val := l_promise_result.promise_value;
+              self.typeval := l_promise_result.promise_typeval;
             end if;
           end if;
         end loop;
@@ -409,6 +424,8 @@ create or replace type body promise as
 
   begin
 
+    l_message_properties.expiration := promises_ninja.promise_lifetime;
+
     dbms_aq.enqueue(
       queue_name            =>    queue_name
       , enqueue_options     =>    l_enqueue_options
@@ -434,6 +451,8 @@ create or replace type body promise as
     l_message_handle      raw(16);
 
   begin
+
+    l_message_properties.expiration := promises_ninja.promise_lifetime;
 
     dbms_aq.enqueue(
       queue_name            =>    queue_name
@@ -570,8 +589,9 @@ create or replace type body promise as
 
   begin
 
+    self.check_and_set_value;
+
     if self.typeval = 1 then
-      self.check_and_set_value;
       if self.state = 'pending' then
         l_ret_val := null;
       else
@@ -593,8 +613,9 @@ create or replace type body promise as
 
   begin
 
+    self.check_and_set_value;
+
     if self.typeval = 2 then
-      self.check_and_set_value;
       if self.state = 'pending' then
         l_ret_val := null;
       else
@@ -615,20 +636,27 @@ create or replace type body promise as
     l_ret_val           varchar2(4000);
     l_num               number;
     l_date              date;
-    l_extracted_val     sys.anydata := self.val;
+    l_extracted_val     sys.anydata;
 
   begin
 
-    case l_extracted_val.gettypename
-      when 'SYS.NUMBER' then
-        if (l_extracted_val.getNumber(l_num) = dbms_types.success ) then l_ret_val := l_num; end if;
-      when 'SYS.DATE' then
-        if (l_extracted_val.getDate(l_date) = dbms_types.success ) then l_ret_val := l_date; end if;
-      when 'SYS.VARCHAR2' then
-        if (l_extracted_val.getVarchar2(l_ret_val) = dbms_types.success ) then null; end if;
-      else
-        l_ret_val := '** unknown value type **';
-    end case;
+    self.check_and_set_value;
+
+    if self.state = 'pending' then
+      l_ret_val := null;
+    else
+      l_extracted_val := self.val;
+      case l_extracted_val.gettypename
+        when 'SYS.NUMBER' then
+          if (l_extracted_val.getNumber(l_num) = dbms_types.success ) then l_ret_val := l_num; end if;
+        when 'SYS.DATE' then
+          if (l_extracted_val.getDate(l_date) = dbms_types.success ) then l_ret_val := l_date; end if;
+        when 'SYS.VARCHAR2' then
+          if (l_extracted_val.getVarchar2(l_ret_val) = dbms_types.success ) then null; end if;
+        else
+          l_ret_val := '** unknown value type **';
+      end case;
+    end if;
 
     return l_ret_val;
 
@@ -736,6 +764,8 @@ create or replace type body promise as
     l_function_output             all_arguments%rowtype;
     l_on_fullfilled_output_type   number;
     l_on_rejected_output_type     number;
+    l_fulfilled_input_count       number;
+    l_rejected_input_count        number;
 
   begin
 
@@ -753,6 +783,12 @@ create or replace type body promise as
       else
         raise_application_error(-20042, 'unsupported output type (on_fulfilled) inside then call');
       end if;
+      -- Check if need input at all.
+      select count(*)
+      into l_fulfilled_input_count
+      from all_arguments
+      where object_name = upper(on_fullfilled)
+      and in_out = 'IN';
     end if;
 
     if on_rejected is not null then
@@ -768,6 +804,12 @@ create or replace type body promise as
       else
         raise_application_error(-20042, 'unsupported output type (on_rejected) inside then call');
       end if;
+      -- Check if need input at all.
+      select count(*)
+      into l_rejected_input_count
+      from all_arguments
+      where object_name = upper(on_rejected)
+      and in_out = 'IN';
     end if;
 
     l_anonymous_plsql_block := 'declare
@@ -855,12 +897,18 @@ create or replace type body promise as
       if on_fullfilled is not null then
         l_anonymous_plsql_block := l_anonymous_plsql_block || '
       if l_dpr.promise_result = ''SUCCESS'' then
-        l_ofr := '|| on_fullfilled ||'(l_po);
+        ';
+        if l_fulfilled_input_count > 0 then
+          l_anonymous_plsql_block := l_anonymous_plsql_block || 'l_ofr := '|| on_fullfilled ||'(l_po);';
+        else
+          l_anonymous_plsql_block := l_anonymous_plsql_block || 'l_ofr := '|| on_fullfilled ||';';
+        end if;
+        l_anonymous_plsql_block := l_anonymous_plsql_block || '
         l_epr := promise_result';
         if l_on_fullfilled_output_type = 1 then
-          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 1, sys.anydata.convertnumber(l_ofr), null, null, null);';
+          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 1, sys.anydata.convertnumber(l_ofr), '''|| self.promise_name ||''', '''|| to_char(self.chain_size) ||''', null);';
         elsif l_on_fullfilled_output_type = 2 then
-          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 2, sys.anydata.convertvarchar2(l_ofr), null, null, null);';
+          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 2, sys.anydata.convertvarchar2(l_ofr), '''|| self.promise_name ||''', '''|| to_char(self.chain_size) ||''', null);';
         end if;
         l_anonymous_plsql_block := l_anonymous_plsql_block || '
         l_jqm := promise_job_notify(''' || new_promise_name || ''', ''SUCCESS'');
@@ -870,12 +918,18 @@ create or replace type body promise as
       if on_rejected is not null then
         l_anonymous_plsql_block := l_anonymous_plsql_block || '
       if l_dpr.promise_result = ''FAILURE'' then
-        l_orr := '|| on_rejected ||'(l_po);
+        ';
+        if l_rejected_input_count > 0 then
+          l_anonymous_plsql_block := l_anonymous_plsql_block || 'l_orr := '|| on_rejected ||'(l_po);';
+        else
+          l_anonymous_plsql_block := l_anonymous_plsql_block || 'l_orr := '|| on_rejected ||';';
+        end if;
+        l_anonymous_plsql_block := l_anonymous_plsql_block || '
         l_epr := promise_result';
         if l_on_rejected_output_type = 1 then
-          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 1, sys.anydata.convertnumber(l_orr), null, null, null);';
+          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 1, sys.anydata.convertnumber(l_orr), '''|| self.promise_name ||''', '''|| to_char(self.chain_size) ||''', null);';
         elsif l_on_rejected_output_type = 2 then
-          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 2, sys.anydata.convertvarchar2(l_orr), null, null, null);';
+          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 2, sys.anydata.convertvarchar2(l_orr), '''|| self.promise_name ||''', '''|| to_char(self.chain_size) ||''', null);';
         end if;
         l_anonymous_plsql_block := l_anonymous_plsql_block || '
         l_jqm := promise_job_notify(''' || new_promise_name || ''', ''SUCCESS'');
@@ -900,7 +954,7 @@ create or replace type body promise as
       exception
         when others then
           l_fe := SQLCODE || ''-'' || SQLERRM;
-          l_epr := promise_result(''' || new_promise_name || ''', ''FAILURE'', 2, sys.anydata.convertvarchar2(l_fe), null, null, null);
+          l_epr := promise_result(''' || new_promise_name || ''', ''FAILURE'', 2, sys.anydata.convertvarchar2(l_fe), '''|| self.promise_name ||''', '''|| to_char(self.chain_size) ||''', null);
           l_jqm := promise_job_notify(''' || new_promise_name || ''', ''FAILURE'');
           dbms_aq.enqueue(
             queue_name => ''promise_async_queue''
@@ -922,6 +976,33 @@ create or replace type body promise as
     return l_anonymous_plsql_block;
 
   end get_then_job_code;
+
+  member function get_function_return(
+    function_name       varchar2
+  )
+  return number
+
+  as
+
+    l_function_output             all_arguments%rowtype;
+
+  begin
+
+    select *
+    into l_function_output
+    from all_arguments
+    where object_name = upper(function_name)
+    and in_out = 'OUT';
+
+    if l_function_output.data_type = 'NUMBER' then
+      return 1;
+    elsif l_function_output.data_type = 'VARCHAR2' then
+      return 2;
+    else
+      raise_application_error(-20042, 'unsupported return datatype for on_success/on_reject function');
+    end if;
+
+  end get_function_return;
 
 end;
 /

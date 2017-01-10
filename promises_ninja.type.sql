@@ -41,6 +41,8 @@ create type promise as object (
   , member procedure then_p (self in out promise, ref_promise in out promise, on_fullfilled varchar2 default null, on_rejected varchar2 default null)
   -- then, where we actually care about the result. Return is the pointer to the data. Callers responsibility to check if completed.
   , member function then_f (self in out promise, on_fullfilled varchar2 default null, on_rejected varchar2 default null) return promise
+  -- Catch, should be used as the last call in a chain to make sure you catch any potential errors from the last wanted step.
+  , member function catch (self in out promise, on_rejected varchar2) return promise
   -- Generate and return a uniqueue promise name.
   , member function get_promise_name return varchar2
   -- Procedure to execute the promise, if not a thenable.
@@ -75,6 +77,7 @@ create type promise as object (
   , member function on_is_function(function_name varchar2) return boolean
   , member function get_exec_job_code return varchar2
   , member function get_then_job_code(on_fullfilled varchar2, on_rejected varchar2, new_promise_name varchar2) return varchar2
+  , member function get_function_return(function_name varchar2) return number
 )
 not final;
 /
