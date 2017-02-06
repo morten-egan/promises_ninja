@@ -97,6 +97,33 @@ create or replace type body promise as
 
   end promise;
 
+  constructor function promise (
+    executor            varchar2
+    , executor_val      date
+  )
+  return self as result
+
+  as
+
+  begin
+
+    self.promise_name := self.get_promise_name();
+    self.state := 'pending';
+    self.typeval := 0;
+    self.o_executor := executor;
+    self.o_executor_typeval := 4;
+    self.o_executor_val := sys.anydata.convertdate(executor_val);
+    self.o_execute := 0;
+    self.chain_size := 0;
+
+    self.validate_p();
+
+    self.execute_promise();
+
+    return;
+
+  end promise;
+
   member procedure validate_p (
     self                in out nocopy        promise
   )
@@ -131,6 +158,8 @@ create or replace type body promise as
               raise_application_error(-20042, 'promise executor, input parameter mismatch');
             elsif l_function_input.data_type = 'VARCHAR2' and self.o_executor_typeval != 2 then
               raise_application_error(-20042, 'promise executor, input parameter mismatch');
+            elsif l_function_input.data_type = 'DATE' and self.o_executor_typeval != 4 then
+              raise_application_error(-20042, 'promise executor, input parameter mismatch');
             end if;
             exception
               when others then
@@ -147,8 +176,10 @@ create or replace type body promise as
           self.typeval := 1;
         elsif l_function_output.data_type = 'VARCHAR2' then
           self.typeval := 2;
+        elsif l_function_output.data_type = 'DATE' then
+          self.typeval := 4;
         else
-          raise_application_error(-20042, 'only number or varchar2 output currently supported for promises');
+          raise_application_error(-20042, 'only number, varchar2 or date output currently supported for promises');
         end if;
       else
         raise_application_error(-20042, 'promise executor invalid privileges or does not exist');
@@ -273,6 +304,7 @@ create or replace type body promise as
             case self.typeval
               when 1 then new_promise := promise(on_fullfilled, sys.anydata.accessNumber(self.val));
               when 2 then new_promise := promise(on_fullfilled, sys.anydata.accessVarchar2(self.val));
+              when 4 then new_promise := promise(on_fullfilled, sys.anydata.accessDate(self.val));
             end case;
           else
             -- on_fulfilled is not a function. Standard says ignore.
@@ -287,6 +319,7 @@ create or replace type body promise as
             case self.typeval
               when 1 then new_promise := promise(on_rejected, sys.anydata.accessNumber(self.val));
               when 2 then new_promise := promise(on_rejected, sys.anydata.accessVarchar2(self.val));
+              when 4 then new_promise := promise(on_rejected, sys.anydata.accessDate(self.val));
             end case;
           else
             -- on_rejected is not a function. Ignore for now
@@ -537,6 +570,28 @@ create or replace type body promise as
 
   end resolve;
 
+  member procedure resolve(
+    self              in out    promise
+    , resolved_val              date
+  )
+
+  as
+
+  begin
+
+    if self.state = 'pending' then
+      self.o_execute := 1;
+      self.state := 'fulfilled';
+      self.typeval := 4;
+      self.val := sys.anydata.convertdate(resolved_val);
+      self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
+      self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
+    else
+      raise_application_error(-20042, 'promises cannot be resolved if already resolved or rejected');
+    end if;
+
+  end resolve;
+
   member procedure reject(
     self              in out    promise
     , rejection                 varchar2
@@ -628,6 +683,30 @@ create or replace type body promise as
 
   end getvalue_varchar;
 
+  member function getvalue_date(self in out promise)
+  return date
+
+  as
+
+    l_ret_val       date;
+
+  begin
+
+    self.check_and_set_value;
+
+    if self.typeval = 4 then
+      if self.state = 'pending' then
+        l_ret_val := null;
+      else
+        l_ret_val := sys.anydata.accessDate(self.val);
+      end if;
+      return l_ret_val;
+    else
+      raise_application_error(-20042, 'promise value not a date');
+    end if;
+
+  end getvalue_date;
+
   member function getanyvalue(self in out promise)
   return varchar2
 
@@ -683,6 +762,8 @@ create or replace type body promise as
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'number;';
     elsif self.typeval = 2 then
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'varchar2(32000);';
+    elsif self.typeval = 4 then
+      l_anonymous_plsql_block := l_anonymous_plsql_block || 'date;';
     end if;
     if self.o_executor_typeval > 0 then
       l_anonymous_plsql_block := l_anonymous_plsql_block || '
@@ -691,6 +772,8 @@ create or replace type body promise as
         l_anonymous_plsql_block := l_anonymous_plsql_block || 'number := ' || to_char(sys.anydata.accessNumber(self.o_executor_val)) || ';';
       elsif self.o_executor_typeval = 2 then
         l_anonymous_plsql_block := l_anonymous_plsql_block || 'varchar2(32000) := ''' || to_char(sys.anydata.accessVarchar2(self.o_executor_val)) || ''';';
+      elsif self.o_executor_typeval = 4 then
+        l_anonymous_plsql_block := l_anonymous_plsql_block || 'date := to_date(''' || to_char(sys.anydata.accessDate(self.o_executor_val)) || ''');';
       end if;
     end if;
     l_anonymous_plsql_block := l_anonymous_plsql_block || '
@@ -707,6 +790,8 @@ create or replace type body promise as
       l_anonymous_plsql_block := l_anonymous_plsql_block || '(''' || self.promise_name || ''', ''SUCCESS'', 1, sys.anydata.convertnumber(l_pr), null, null, null);';
     elsif self.typeval = 2 then
       l_anonymous_plsql_block := l_anonymous_plsql_block || '(''' || self.promise_name || ''', ''SUCCESS'', 2, sys.anydata.convertvarchar2(l_pr), null, null, null);';
+    elsif self.typeval = 4 then
+      l_anonymous_plsql_block := l_anonymous_plsql_block || '(''' || self.promise_name || ''', ''SUCCESS'', 4, sys.anydata.convertdate(l_pr), null, null, null);';
     end if;
     l_anonymous_plsql_block := l_anonymous_plsql_block || '
         l_jm := promise_job_notify(''' || self.promise_name || ''', ''SUCCESS'');
@@ -780,6 +865,8 @@ create or replace type body promise as
         l_on_fullfilled_output_type := 1;
       elsif l_function_output.data_type = 'VARCHAR2' then
         l_on_fullfilled_output_type := 2;
+      elsif l_function_output.data_type = 'DATE' then
+        l_on_fullfilled_output_type := 4;
       else
         raise_application_error(-20042, 'unsupported output type (on_fulfilled) inside then call');
       end if;
@@ -801,6 +888,8 @@ create or replace type body promise as
         l_on_rejected_output_type := 1;
       elsif l_function_output.data_type = 'VARCHAR2' then
         l_on_rejected_output_type := 2;
+      elsif l_function_output.data_type = 'DATE' then
+        l_on_rejected_output_type := 4;
       else
         raise_application_error(-20042, 'unsupported output type (on_rejected) inside then call');
       end if;
@@ -833,6 +922,8 @@ create or replace type body promise as
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'number;';
     elsif self.typeval = 2 then
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'varchar2(32000);';
+    elsif self.typeval = 4 then
+      l_anonymous_plsql_block := l_anonymous_plsql_block || 'date;';
     end if;
     l_anonymous_plsql_block := l_anonymous_plsql_block ||'
       l_ofr ';
@@ -840,6 +931,8 @@ create or replace type body promise as
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'number;';
     elsif l_on_fullfilled_output_type = 2 then
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'varchar2(32000);';
+    elsif l_on_fullfilled_output_type = 4 then
+      l_anonymous_plsql_block := l_anonymous_plsql_block || 'date;';
     else
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'varchar2(32000);';
     end if;
@@ -849,6 +942,8 @@ create or replace type body promise as
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'number;';
     elsif l_on_rejected_output_type = 2 then
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'varchar2(32000);';
+    elsif l_on_rejected_output_type = 4 then
+      l_anonymous_plsql_block := l_anonymous_plsql_block || 'date;';
     else
       l_anonymous_plsql_block := l_anonymous_plsql_block || 'varchar2(32000);';
     end if;
@@ -881,6 +976,8 @@ create or replace type body promise as
         l_anonymous_plsql_block := l_anonymous_plsql_block || 'sys.anydata.accessNumber(l_dpr.promise_value);';
       elsif self.typeval = 2 then
         l_anonymous_plsql_block := l_anonymous_plsql_block || 'sys.anydata.accessVarchar2(l_dpr.promise_value);';
+      elsif self.typeval = 4 then
+        l_anonymous_plsql_block := l_anonymous_plsql_block || 'sys.anydata.accessDate(l_dpr.promise_value);';
       end if;
       l_anonymous_plsql_block := l_anonymous_plsql_block || '
             else
@@ -909,6 +1006,8 @@ create or replace type body promise as
           l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 1, sys.anydata.convertnumber(l_ofr), '''|| self.promise_name ||''', '''|| to_char(self.chain_size) ||''', null);';
         elsif l_on_fullfilled_output_type = 2 then
           l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 2, sys.anydata.convertvarchar2(l_ofr), '''|| self.promise_name ||''', '''|| to_char(self.chain_size) ||''', null);';
+        elsif l_on_fullfilled_output_type = 4 then
+          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 4, sys.anydata.convertdate(l_ofr), '''|| self.promise_name ||''', '''|| to_char(self.chain_size) ||''', null);';
         end if;
         l_anonymous_plsql_block := l_anonymous_plsql_block || '
         l_jqm := promise_job_notify(''' || new_promise_name || ''', ''SUCCESS'');
@@ -930,6 +1029,8 @@ create or replace type body promise as
           l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 1, sys.anydata.convertnumber(l_orr), '''|| self.promise_name ||''', '''|| to_char(self.chain_size) ||''', null);';
         elsif l_on_rejected_output_type = 2 then
           l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 2, sys.anydata.convertvarchar2(l_orr), '''|| self.promise_name ||''', '''|| to_char(self.chain_size) ||''', null);';
+        elsif l_on_rejected_output_type = 4 then
+          l_anonymous_plsql_block := l_anonymous_plsql_block || '('''|| new_promise_name ||''', ''SUCCESS'', 4, sys.anydata.convertdate(l_orr), '''|| self.promise_name ||''', '''|| to_char(self.chain_size) ||''', null);';
         end if;
         l_anonymous_plsql_block := l_anonymous_plsql_block || '
         l_jqm := promise_job_notify(''' || new_promise_name || ''', ''SUCCESS'');
@@ -998,6 +1099,8 @@ create or replace type body promise as
       return 1;
     elsif l_function_output.data_type = 'VARCHAR2' then
       return 2;
+    elsif l_function_output.data_type = 'DATE' then
+      return 4;
     else
       raise_application_error(-20042, 'unsupported return datatype for on_success/on_reject function');
     end if;

@@ -11,6 +11,18 @@ as
 
   promise_lifetime    number := 604800;
 
+  -- type to build list of promises. Used in combination with all and race methods.
+  type promise_list_type is table of promise;
+
+  /** This procedure adds a promise to a list of promises.
+  * @author Morten Egan
+  * @param promise_list The description of the parameter
+  */
+  procedure build_promise_list (
+    promise_list              in out        promise_list_type
+    , add_promise             in            promise
+  );
+
   /** This procedure will wait for a promise to complete.
   * @author Morten Egan
   * @param ref_promise This is the promise that we will wait for completion.

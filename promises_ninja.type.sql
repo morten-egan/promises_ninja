@@ -31,6 +31,7 @@ create type promise as object (
   -- Executor with onfullfilled and parameter for executor.
   , constructor function promise (executor varchar2, executor_val number) return self as result
   , constructor function promise (executor varchar2, executor_val varchar2) return self as result
+  , constructor function promise (executor varchar2, executor_val date) return self as result
 
   /*
   * Methods
@@ -57,6 +58,7 @@ create type promise as object (
   , member procedure resolve(self in out promise, resolved_val promise)
   , member procedure resolve(self in out promise, resolved_val number)
   , member procedure resolve(self in out promise, resolved_val varchar2)
+  , member procedure resolve(self in out promise, resolved_val date)
   -- Reject procedure
   , member procedure reject(self in out promise, rejection varchar2)
 
@@ -68,6 +70,7 @@ create type promise as object (
   -- datatype specific getters.
   , member function getvalue_number(self in out promise) return number
   , member function getvalue_varchar(self in out promise) return varchar2
+  , member function getvalue_date(self in out promise) return date
   -- Generic getter for all types
   , member function getanyvalue(self in out promise) return varchar2
 

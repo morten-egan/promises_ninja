@@ -224,6 +224,33 @@ as
 
   end promise_status;
 
+  procedure build_promise_list (
+    promise_list              in out        promise_list_type
+    , add_promise             in            promise
+  )
+
+  as
+
+  begin
+
+    dbms_application_info.set_action('build_promise_list');
+
+    if promise_list is null then
+      promise_list := promise_list_type();
+    end if;
+
+    promise_list.extend(1);
+    promise_list(promise_list.count) := add_promise;
+
+    dbms_application_info.set_action(null);
+
+    exception
+      when others then
+        dbms_application_info.set_action(null);
+        raise;
+
+  end build_promise_list;
+
 begin
 
   dbms_application_info.set_client_info('promises_ninja');
