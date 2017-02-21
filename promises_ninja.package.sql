@@ -16,12 +16,34 @@ as
 
   /** This procedure adds a promise to a list of promises.
   * @author Morten Egan
-  * @param promise_list The description of the parameter
+  * @param promise_list The list of promises we are working on.
+  * @param add_promise The promise we are adding to the list.
   */
   procedure build_promise_list (
     promise_list              in out        promise_list_type
     , add_promise             in            promise
   );
+
+  /** This function will take a promise list as input and dynamically create an anydataset, convert to
+  * anydata which can be treated as an input variable for a new promise.
+  * @author Morten Egan
+  * @param promise_list The list of promises to convert for input to a new promise.all call.
+  * @return sys.anydataset The anydataset object holding the anydataset which is a list of promises.
+  */
+  function convert_promise_list (
+    promise_list              in            promise_list_type
+  )
+  return sys.anydata;
+
+  /** This function will take a promise from an all call, and convert the anydata result to
+  * a list of promises that can be accessed directly.
+  * @author Morten Egan
+  * @return promise_list_type The list of promises that is returned. Will return null if not resolved.
+  */
+  function getvalues_promise_list (
+    ref_promise               in            promise
+  )
+  return promise_list_type;
 
   /** This procedure will wait for a promise to complete.
   * @author Morten Egan

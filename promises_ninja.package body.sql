@@ -251,6 +251,86 @@ as
 
   end build_promise_list;
 
+  function convert_promise_list (
+    promise_list              in            promise_list_type
+  )
+  return sys.anydata
+
+  as
+
+    l_ret_var               sys.anydata;
+    l_tmp_obj               promises_list_obj;
+
+  begin
+
+    dbms_application_info.set_action('convert_promise_list');
+
+    l_tmp_obj.promise_list := promise_list_tab();
+
+    for i in 1..convert_promise_list.promise_list.count() loop
+      l_tmp_obj.promise_list.extend(1);
+      l_tmp_obj.promise_list(l_tmp_obj.promise_list.count()) := sys.anydata.convertObject(convert_promise_list.promise_list(i));
+    end loop;
+
+    l_ret_var := sys.anydata.convertObject(l_tmp_obj);
+
+    dbms_application_info.set_action(null);
+
+    return l_ret_var;
+
+    exception
+      when others then
+        dbms_application_info.set_action(null);
+        raise;
+
+  end convert_promise_list;
+
+  function getvalues_promise_list (
+    ref_promise               in            promise
+  )
+  return promise_list_type
+
+  as
+
+    l_ret_var               promise_list_type := promise_list_type();
+    l_tmp_obj               promises_list_obj;
+    l_tmp_tab               promise_list_tab;
+    l_tmp_promise           promise;
+
+  begin
+
+    dbms_application_info.set_action('getvalues_promise_list');
+
+    if ref_promise.state = 'fulfilled' then
+      -- l_tmp_obj := sys.anydata.convertObject(ref_promise.val);
+      if ref_promise.val.getObject(l_tmp_obj) = dbms_types.success then
+        l_tmp_tab := l_tmp_obj.promise_list;
+        for i in 1..l_tmp_tab.count() loop
+          l_ret_var.extend(1);
+          if l_tmp_tab(i).getObject(l_tmp_promise) = dbms_types.success then
+            l_ret_var(l_ret_var.count()) := l_tmp_promise;
+          else
+            l_ret_var(l_ret_var.count()) := null;
+          end if;
+        end loop;
+      else
+        l_ret_var := null;
+      end if;
+    else
+      l_ret_var := null;
+    end if;
+
+    dbms_application_info.set_action(null);
+
+    return l_ret_var;
+
+    exception
+      when others then
+        dbms_application_info.set_action(null);
+        raise;
+
+  end getvalues_promise_list;
+
 begin
 
   dbms_application_info.set_client_info('promises_ninja');

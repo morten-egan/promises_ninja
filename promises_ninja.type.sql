@@ -9,15 +9,21 @@ create type promise as object (
   , state                   varchar2(20)
   -- chain_size is a count of how many then_p calls that has been called on this promise. Used to determine call order.
   , chain_size              number
+  -- All flag. If this flag is set we treat the promise a little bit specially since we are waiting for multiple promises.
+  , all_flag                number
   -- val is the value of the promise result when the promise is fullfilled.
   , val                     sys.anydata
-  -- typeval is a numeric representation of the value type. 0=null, 1=number, 2=varchar2, 3=clob, 4=date, 5=blob
+  -- typeval is a numeric representation of the value type.
+  --   Standard type: 0=null, 1=number, 2=varchar2, 3=clob, 4=date, 5=blob
+  --   Special types: 84=List of values, result from all call. Represented as anydata of p_datalist_o.
   , typeval                 number
   -- o_executor is the name of the function that we are calling.
   , o_executor              varchar2(30)
   -- o_executor_val is the input value to o_executor
   , o_executor_val          sys.anydata
-  -- o_executer_typeval is the input value type. 0=null, 1=number, 2=varchar2, 3=clob, 4=date, 5=blob
+  -- o_executer_typeval is the input value type.
+  --   Standard type: 0=null, 1=number, 2=varchar2, 3=clob, 4=date, 5=blob
+  --   Special types: 42=List of promises. Represented as anydata of p_datalist_o.
   , o_executor_typeval      number
   -- o_execute
   , o_execute               number
@@ -42,6 +48,8 @@ create type promise as object (
   , member procedure then_p (self in out promise, ref_promise in out promise, on_fullfilled varchar2 default null, on_rejected varchar2 default null)
   -- then, where we actually care about the result. Return is the pointer to the data. Callers responsibility to check if completed.
   , member function then_f (self in out promise, on_fullfilled varchar2 default null, on_rejected varchar2 default null) return promise
+  -- all, where we take a list of promises and only when all promises are fulfilled we consider fulfilled.
+  , member procedure all_p (self in out promise, promise_list sys.anydata, on_fullfilled varchar2 default null, on_rejected varchar2 default null)
   -- Catch, should be used as the last call in a chain to make sure you catch any potential errors from the last wanted step.
   , member function catch (self in out promise, on_rejected varchar2) return promise
   -- Generate and return a uniqueue promise name.
@@ -55,10 +63,10 @@ create type promise as object (
   -- Send message to job queue.
   , member procedure job_enqueue(self in out promise, queue_name varchar2, queue_message promise_job_notify)
   -- Resolve procedures
-  , member procedure resolve(self in out promise, resolved_val promise)
-  , member procedure resolve(self in out promise, resolved_val number)
-  , member procedure resolve(self in out promise, resolved_val varchar2)
-  , member procedure resolve(self in out promise, resolved_val date)
+  , member procedure resolve(self in out promise, resolved_val promise, all_idx number default null)
+  , member procedure resolve(self in out promise, resolved_val number, all_idx number default null)
+  , member procedure resolve(self in out promise, resolved_val varchar2, all_idx number default null)
+  , member procedure resolve(self in out promise, resolved_val date, all_idx number default null)
   -- Reject procedure
   , member procedure reject(self in out promise, rejection varchar2)
 

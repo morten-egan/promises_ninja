@@ -13,6 +13,7 @@ create or replace type body promise as
     self.o_executor := null;
     self.o_execute := 0;
     self.chain_size := 0;
+    self.all_flag := 0;
 
     return;
 
@@ -34,6 +35,7 @@ create or replace type body promise as
     self.o_executor_typeval := 0;
     self.o_execute := 0;
     self.chain_size := 0;
+    self.all_flag := 0;
 
     self.validate_p();
 
@@ -61,6 +63,7 @@ create or replace type body promise as
     self.o_executor_val := sys.anydata.convertnumber(executor_val);
     self.o_execute := 0;
     self.chain_size := 0;
+    self.all_flag := 0;
 
     self.validate_p();
 
@@ -88,6 +91,7 @@ create or replace type body promise as
     self.o_executor_val := sys.anydata.convertvarchar2(executor_val);
     self.o_execute := 0;
     self.chain_size := 0;
+    self.all_flag := 0;
 
     self.validate_p();
 
@@ -115,6 +119,7 @@ create or replace type body promise as
     self.o_executor_val := sys.anydata.convertdate(executor_val);
     self.o_execute := 0;
     self.chain_size := 0;
+    self.all_flag := 0;
 
     self.validate_p();
 
@@ -350,6 +355,33 @@ create or replace type body promise as
 
   end then_f;
 
+  member procedure all_p (
+    self              in out        promise
+    , promise_list                  sys.anydata
+    , on_fullfilled                 varchar2 default null
+    , on_rejected                   varchar2 default null
+  )
+
+  as
+
+  begin
+
+    -- Ok we are receiving a list of promises. And only if all the promises are fulfilled this promise will be fulfilled.
+    if instr(promise_list.gettypename(), '.PROMISES_LIST_OBJ') > 1 then
+      -- Check if we have already initialized this promise. Currently not supported to use all on already initialized.
+      if self.o_execute = 0 then
+        self.typeval := 84;
+        self.all_flag := 1;
+        self.o_executor_val := promise_list;
+      else
+        raise_application_error(-20042, 'cannot call all on already initialized promise');
+      end if;
+    else
+      raise_application_error(-20042, 'all can only be called with the PROMISES_LIST_OBJ object inside the anydata');
+    end if;
+
+  end all_p;
+
   member procedure execute_promise(
     self in out nocopy promise
   )
@@ -501,20 +533,32 @@ create or replace type body promise as
   member procedure resolve(
     self              in out    promise
     , resolved_val              promise
+    , all_idx                   number      default null
   )
 
   as
+
+    l_resolving_promise         promises_list_obj;
 
   begin
 
     if self.state = 'pending' then
       if resolved_val.state = 'fulfilled' then
-        self.o_execute := 1;
-        self.typeval := resolved_val.typeval;
-        self.val := resolved_val.val;
-        self.state := 'fulfilled';
-        self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
-        self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
+        if all_idx is not null and self.all_flag = 1 then
+          if self.val.getObject(l_resolving_promise) = dbms_types.success then
+            if l_resolving_promise.exists(all_idx) then
+              l_resolving_promise(all_idx).resolve(resolved_val);
+              self.val := sys.anydata.convertObject(l_resolving_promise);
+            end if;
+          end if;
+        else
+          self.o_execute := 1;
+          self.typeval := resolved_val.typeval;
+          self.val := resolved_val.val;
+          self.state := 'fulfilled';
+          self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
+          self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
+        end if;
       elsif resolved_val.state = 'rejected' then
         raise_application_error(-20042, 'cannot resolve a promise with another rejected promise');
       else
@@ -529,19 +573,31 @@ create or replace type body promise as
   member procedure resolve(
     self              in out    promise
     , resolved_val              number
+    , all_idx                   number      default null
   )
 
   as
 
+    l_resolving_promise         promises_list_obj;
+
   begin
 
     if self.state = 'pending' then
-      self.o_execute := 1;
-      self.state := 'fulfilled';
-      self.typeval := 1;
-      self.val := sys.anydata.convertnumber(resolved_val);
-      self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
-      self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
+      if all_idx is not null and self.all_flag = 1 then
+        if self.val.getObject(l_resolving_promise) = dbms_types.success then
+          if l_resolving_promise.exists(all_idx) then
+            l_resolving_promise(all_idx).resolve(resolved_val);
+            self.val := sys.anydata.convertObject(l_resolving_promise);
+          end if;
+        end if;
+      else
+        self.o_execute := 1;
+        self.state := 'fulfilled';
+        self.typeval := 1;
+        self.val := sys.anydata.convertnumber(resolved_val);
+        self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
+        self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
+      end if;
     else
       raise_application_error(-20042, 'promises cannot be resolved if already resolved or rejected');
     end if;
@@ -551,19 +607,31 @@ create or replace type body promise as
   member procedure resolve(
     self              in out    promise
     , resolved_val              varchar2
+    , all_idx                   number      default null
   )
 
   as
 
+    l_resolving_promise         promises_list_obj;
+
   begin
 
     if self.state = 'pending' then
-      self.o_execute := 1;
-      self.state := 'fulfilled';
-      self.typeval := 2;
-      self.val := sys.anydata.convertvarchar2(resolved_val);
-      self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
-      self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
+      if all_idx is not null and self.all_flag = 1 then
+        if self.val.getObject(l_resolving_promise) = dbms_types.success then
+          if l_resolving_promise.exists(all_idx) then
+            l_resolving_promise(all_idx).resolve(resolved_val);
+            self.val := sys.anydata.convertObject(l_resolving_promise);
+          end if;
+        end if;
+      else
+        self.o_execute := 1;
+        self.state := 'fulfilled';
+        self.typeval := 2;
+        self.val := sys.anydata.convertvarchar2(resolved_val);
+        self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
+        self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
+      end if;
     else
       raise_application_error(-20042, 'promises cannot be resolved if already resolved or rejected');
     end if;
@@ -573,19 +641,31 @@ create or replace type body promise as
   member procedure resolve(
     self              in out    promise
     , resolved_val              date
+    , all_idx                   number      default null
   )
 
   as
 
+    l_resolving_promise         promises_list_obj;
+
   begin
 
     if self.state = 'pending' then
-      self.o_execute := 1;
-      self.state := 'fulfilled';
-      self.typeval := 4;
-      self.val := sys.anydata.convertdate(resolved_val);
-      self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
-      self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
+      if all_idx is not null and self.all_flag = 1 then
+        if self.val.getObject(l_resolving_promise) = dbms_types.success then
+          if l_resolving_promise.exists(all_idx) then
+            l_resolving_promise(all_idx).resolve(resolved_val);
+            self.val := sys.anydata.convertObject(l_resolving_promise);
+          end if;
+        end if;
+      else
+        self.o_execute := 1;
+        self.state := 'fulfilled';
+        self.typeval := 4;
+        self.val := sys.anydata.convertdate(resolved_val);
+        self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
+        self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
+      end if;
     else
       raise_application_error(-20042, 'promises cannot be resolved if already resolved or rejected');
     end if;
