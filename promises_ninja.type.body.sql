@@ -539,6 +539,7 @@ create or replace type body promise as
   as
 
     l_resolving_promise         promises_list_obj;
+    l_resolving_promise_o       promise;
 
   begin
 
@@ -546,9 +547,12 @@ create or replace type body promise as
       if resolved_val.state = 'fulfilled' then
         if all_idx is not null and self.all_flag = 1 then
           if self.val.getObject(l_resolving_promise) = dbms_types.success then
-            if l_resolving_promise.exists(all_idx) then
-              l_resolving_promise(all_idx).resolve(resolved_val);
-              self.val := sys.anydata.convertObject(l_resolving_promise);
+            if l_resolving_promise.promise_list.exists(all_idx) then
+              if l_resolving_promise.promise_list(all_idx).getObject(l_resolving_promise_o) = dbms_types.success then
+                l_resolving_promise_o.resolve(resolved_val);
+                l_resolving_promise.promise_list(all_idx) := sys.anydata.convertObject(l_resolving_promise_o);
+                self.val := sys.anydata.convertObject(l_resolving_promise);
+              end if;
             end if;
           end if;
         else
@@ -579,15 +583,19 @@ create or replace type body promise as
   as
 
     l_resolving_promise         promises_list_obj;
+    l_resolving_promise_o       promise;
 
   begin
 
     if self.state = 'pending' then
       if all_idx is not null and self.all_flag = 1 then
         if self.val.getObject(l_resolving_promise) = dbms_types.success then
-          if l_resolving_promise.exists(all_idx) then
-            l_resolving_promise(all_idx).resolve(resolved_val);
-            self.val := sys.anydata.convertObject(l_resolving_promise);
+          if l_resolving_promise.promise_list.exists(all_idx) then
+            if l_resolving_promise.promise_list(all_idx).getObject(l_resolving_promise_o) = dbms_types.success then
+              l_resolving_promise_o.resolve(resolved_val);
+              l_resolving_promise.promise_list(all_idx) := sys.anydata.convertObject(l_resolving_promise_o);
+              self.val := sys.anydata.convertObject(l_resolving_promise);
+            end if;
           end if;
         end if;
       else
@@ -613,15 +621,19 @@ create or replace type body promise as
   as
 
     l_resolving_promise         promises_list_obj;
+    l_resolving_promise_o       promise;
 
   begin
 
     if self.state = 'pending' then
       if all_idx is not null and self.all_flag = 1 then
         if self.val.getObject(l_resolving_promise) = dbms_types.success then
-          if l_resolving_promise.exists(all_idx) then
-            l_resolving_promise(all_idx).resolve(resolved_val);
-            self.val := sys.anydata.convertObject(l_resolving_promise);
+          if l_resolving_promise.promise_list.exists(all_idx) then
+            if l_resolving_promise.promise_list(all_idx).getObject(l_resolving_promise_o) = dbms_types.success then
+              l_resolving_promise_o.resolve(resolved_val);
+              l_resolving_promise.promise_list(all_idx) := sys.anydata.convertObject(l_resolving_promise_o);
+              self.val := sys.anydata.convertObject(l_resolving_promise);
+            end if;
           end if;
         end if;
       else
@@ -647,15 +659,19 @@ create or replace type body promise as
   as
 
     l_resolving_promise         promises_list_obj;
+    l_resolving_promise_o       promise;
 
   begin
 
     if self.state = 'pending' then
       if all_idx is not null and self.all_flag = 1 then
         if self.val.getObject(l_resolving_promise) = dbms_types.success then
-          if l_resolving_promise.exists(all_idx) then
-            l_resolving_promise(all_idx).resolve(resolved_val);
-            self.val := sys.anydata.convertObject(l_resolving_promise);
+          if l_resolving_promise.promise_list.exists(all_idx) then
+            if l_resolving_promise.promise_list(all_idx).getObject(l_resolving_promise_o) = dbms_types.success then
+              l_resolving_promise_o.resolve(resolved_val);
+              l_resolving_promise.promise_list(all_idx) := sys.anydata.convertObject(l_resolving_promise_o);
+              self.val := sys.anydata.convertObject(l_resolving_promise);
+            end if;
           end if;
         end if;
       else

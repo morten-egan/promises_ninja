@@ -259,7 +259,7 @@ as
   as
 
     l_ret_var               sys.anydata;
-    l_tmp_obj               promises_list_obj;
+    l_tmp_obj               promises_list_obj := promises_list_obj(null);
 
   begin
 
