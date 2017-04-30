@@ -64,6 +64,7 @@ begin
         job_name              =>      l_promise_result.promise_name || '_J'
         , job_type            =>      'PLSQL_BLOCK'
         , job_action          =>      l_promise_result.thenable
+        , job_class           =>      l_promise_result.promise_class
         , enabled             =>      true
       );
     end if;

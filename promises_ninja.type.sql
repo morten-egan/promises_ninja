@@ -7,10 +7,14 @@ create type promise as object (
   promise_name              varchar2(128)
   -- state of the promise. pending, fulfilled, rejected.
   , state                   varchar2(20)
+  -- state_time is the time that the state was set. Used especially for race calls where the first result is the final result.
+  , state_time              date
   -- chain_size is a count of how many then_p calls that has been called on this promise. Used to determine call order.
   , chain_size              number
   -- All flag. If this flag is set we treat the promise a little bit specially since we are waiting for multiple promises.
   , all_flag                number
+  -- Race flag. If this flag is set we treat this promise as a race between the promises it will be initiated with.
+  , race_flag               number
   -- val is the value of the promise result when the promise is fullfilled.
   , val                     sys.anydata
   -- typeval is a numeric representation of the value type.
@@ -27,17 +31,21 @@ create type promise as object (
   , o_executor_typeval      number
   -- o_execute
   , o_execute               number
+  -- Promise class. Use this class as the job class when running the promises.
+  -- This is to support Job classes in dbms_scheduler so jobs can run using the
+  -- correct service and edition.
+  , promise_class           varchar2(32)
   /*
   * Constructors
   */
   -- Empty
   , constructor function promise return self as result
   -- Executor with onfullfilled and onrejected but no input to
-  , constructor function promise (executor varchar2) return self as result
+  , constructor function promise (executor varchar2, promise_class varchar2 default null) return self as result
   -- Executor with onfullfilled and parameter for executor.
-  , constructor function promise (executor varchar2, executor_val number) return self as result
-  , constructor function promise (executor varchar2, executor_val varchar2) return self as result
-  , constructor function promise (executor varchar2, executor_val date) return self as result
+  , constructor function promise (executor varchar2, executor_val number, promise_class varchar2 default null) return self as result
+  , constructor function promise (executor varchar2, executor_val varchar2, promise_class varchar2 default null) return self as result
+  , constructor function promise (executor varchar2, executor_val date, promise_class varchar2 default null) return self as result
 
   /*
   * Methods
@@ -50,6 +58,8 @@ create type promise as object (
   , member function then_f (self in out promise, on_fullfilled varchar2 default null, on_rejected varchar2 default null) return promise
   -- all, where we take a list of promises and only when all promises are fulfilled we consider fulfilled.
   , member procedure all_p (self in out promise, promise_list sys.anydata, on_fullfilled varchar2 default null, on_rejected varchar2 default null)
+  -- race, where we take a list of promises and whenever the first promise is resolved, that becomes the result.
+  , member procedure race_p (self in out promise, promise_list sys.anydata, on_fullfilled varchar2 default null, on_rejected varchar2 default null)
   -- Catch, should be used as the last call in a chain to make sure you catch any potential errors from the last wanted step.
   , member function catch (self in out promise, on_rejected varchar2) return promise
   -- Generate and return a uniqueue promise name.
@@ -68,7 +78,7 @@ create type promise as object (
   , member procedure resolve(self in out promise, resolved_val varchar2, all_idx number default null)
   , member procedure resolve(self in out promise, resolved_val date, all_idx number default null)
   -- Reject procedure
-  , member procedure reject(self in out promise, rejection varchar2)
+  , member procedure reject(self in out promise, rejection varchar2, all_idx number default null)
 
   /*
   * Getters

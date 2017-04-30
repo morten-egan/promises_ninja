@@ -9,11 +9,14 @@ create or replace type body promise as
 
     self.promise_name := self.get_promise_name();
     self.state := 'pending';
+    self.state_time := sysdate;
     self.typeval := 0;
     self.o_executor := null;
     self.o_execute := 0;
     self.chain_size := 0;
     self.all_flag := 0;
+    self.race_flag := 0;
+    self.promise_class = null;
 
     return;
 
@@ -21,6 +24,7 @@ create or replace type body promise as
 
   constructor function promise (
     executor            varchar2
+    , promise_class     varchar2 default null
   )
   return self as result
 
@@ -30,12 +34,15 @@ create or replace type body promise as
 
     self.promise_name := self.get_promise_name();
     self.state := 'pending';
+    self.state_time := sysdate;
     self.typeval := 0;
     self.o_executor := executor;
     self.o_executor_typeval := 0;
     self.o_execute := 0;
     self.chain_size := 0;
     self.all_flag := 0;
+    self.race_flag := 0;
+    self.promise_class = promise_class;
 
     self.validate_p();
 
@@ -48,6 +55,7 @@ create or replace type body promise as
   constructor function promise (
     executor            varchar2
     , executor_val      number
+    , promise_class     varchar2 default null
   )
   return self as result
 
@@ -57,6 +65,7 @@ create or replace type body promise as
 
     self.promise_name := self.get_promise_name();
     self.state := 'pending';
+    self.state_time := sysdate;
     self.typeval := 0;
     self.o_executor := executor;
     self.o_executor_typeval := 1;
@@ -64,6 +73,8 @@ create or replace type body promise as
     self.o_execute := 0;
     self.chain_size := 0;
     self.all_flag := 0;
+    self.race_flag := 0;
+    self.promise_class = promise_class;
 
     self.validate_p();
 
@@ -76,6 +87,7 @@ create or replace type body promise as
   constructor function promise (
     executor            varchar2
     , executor_val      varchar2
+    , promise_class     varchar2 default null
   )
   return self as result
 
@@ -85,6 +97,7 @@ create or replace type body promise as
 
     self.promise_name := self.get_promise_name();
     self.state := 'pending';
+    self.state_time := sysdate;
     self.typeval := 0;
     self.o_executor := executor;
     self.o_executor_typeval := 2;
@@ -92,6 +105,8 @@ create or replace type body promise as
     self.o_execute := 0;
     self.chain_size := 0;
     self.all_flag := 0;
+    self.race_flag := 0;
+    self.promise_class = promise_class;
 
     self.validate_p();
 
@@ -104,6 +119,7 @@ create or replace type body promise as
   constructor function promise (
     executor            varchar2
     , executor_val      date
+    , promise_class     varchar2 default null
   )
   return self as result
 
@@ -113,6 +129,7 @@ create or replace type body promise as
 
     self.promise_name := self.get_promise_name();
     self.state := 'pending';
+    self.state_time := sysdate;
     self.typeval := 0;
     self.o_executor := executor;
     self.o_executor_typeval := 4;
@@ -120,6 +137,8 @@ create or replace type body promise as
     self.o_execute := 0;
     self.chain_size := 0;
     self.all_flag := 0;
+    self.race_flag := 0;
+    self.promise_class = promise_class;
 
     self.validate_p();
 
@@ -307,9 +326,9 @@ create or replace type body promise as
         if on_fullfilled is not null then
           if self.on_is_function(on_fullfilled) then
             case self.typeval
-              when 1 then new_promise := promise(on_fullfilled, sys.anydata.accessNumber(self.val));
-              when 2 then new_promise := promise(on_fullfilled, sys.anydata.accessVarchar2(self.val));
-              when 4 then new_promise := promise(on_fullfilled, sys.anydata.accessDate(self.val));
+              when 1 then new_promise := promise(on_fullfilled, sys.anydata.accessNumber(self.val), self.promise_class);
+              when 2 then new_promise := promise(on_fullfilled, sys.anydata.accessVarchar2(self.val), self.promise_class);
+              when 4 then new_promise := promise(on_fullfilled, sys.anydata.accessDate(self.val), self.promise_class);
             end case;
           else
             -- on_fulfilled is not a function. Standard says ignore.
@@ -322,9 +341,9 @@ create or replace type body promise as
         if on_rejected is not null then
           if self.on_is_function(on_rejected) then
             case self.typeval
-              when 1 then new_promise := promise(on_rejected, sys.anydata.accessNumber(self.val));
-              when 2 then new_promise := promise(on_rejected, sys.anydata.accessVarchar2(self.val));
-              when 4 then new_promise := promise(on_rejected, sys.anydata.accessDate(self.val));
+              when 1 then new_promise := promise(on_rejected, sys.anydata.accessNumber(self.val), self.promise_class);
+              when 2 then new_promise := promise(on_rejected, sys.anydata.accessVarchar2(self.val), self.promise_class);
+              when 4 then new_promise := promise(on_rejected, sys.anydata.accessDate(self.val), self.promise_class);
             end case;
           else
             -- on_rejected is not a function. Ignore for now
@@ -340,7 +359,7 @@ create or replace type body promise as
         -- TODO this is where we should put the new promise as a promise result in the asynch queue but with status pending
         -- TODO and the thenable code in the promise result object, along with the order and thenable status.
         -- TODO Lookup promise result valtype here and set correctly in new_promise.
-        l_thenable_result := promise_result(new_promise.promise_name, 'pending', 1, null, self.promise_name, self.chain_size, l_anonymous_plsql_block);
+        l_thenable_result := promise_result(new_promise.promise_name, 'pending', 1, null, self.promise_class, self.promise_name, self.chain_size, l_anonymous_plsql_block);
         self.result_enqueue('promise_async_queue', l_thenable_result);
         -- When we have built the anonymous plsql and enqueued the message
         -- we have also automatically validated the new promise. Set to validated.
@@ -371,7 +390,9 @@ create or replace type body promise as
       -- Check if we have already initialized this promise. Currently not supported to use all on already initialized.
       if self.o_execute = 0 then
         self.typeval := 84;
+        self.o_executor_typeval := 42;
         self.all_flag := 1;
+        self.race_flag := 0;
         self.o_executor_val := promise_list;
       else
         raise_application_error(-20042, 'cannot call all on already initialized promise');
@@ -381,6 +402,34 @@ create or replace type body promise as
     end if;
 
   end all_p;
+
+  member procedure race_p (
+    self              in out        promise
+    , promise_list                  sys.anydata
+    , on_fullfilled                 varchar2 default null
+    , on_rejected                   varchar2 default null
+  )
+
+  as
+
+  begin
+
+    -- Ok we are receiving a list of promises. And only if all the promises are fulfilled this promise will be fulfilled.
+    if instr(promise_list.gettypename(), '.PROMISES_LIST_OBJ') > 1 then
+      -- Check if we have already initialized this promise. Currently not supported to use all on already initialized.
+      if self.o_execute = 0 then
+        self.typeval := 84;
+        self.race_flag := 1;
+        self.all_flag := 0;
+        self.o_executor_val := promise_list;
+      else
+        raise_application_error(-20042, 'cannot call race on already initialized promise');
+      end if;
+    else
+      raise_application_error(-20042, 'race can only be called with the PROMISES_LIST_OBJ object inside the anydata');
+    end if;
+
+  end race_p;
 
   member procedure execute_promise(
     self in out nocopy promise
@@ -399,6 +448,7 @@ create or replace type body promise as
         job_name            =>    self.promise_name || '_J'
         , job_type          =>    'PLSQL_BLOCK'
         , job_action        =>    l_anonymous_plsql_block
+        , job_class         =>    self.promise_class
         , enabled           =>    true
       );
     else
@@ -411,61 +461,119 @@ create or replace type body promise as
 
   as
 
-    l_promise_result      promise_result;
-    l_dequeue_options     dbms_aq.dequeue_options_t;
-    l_message_properties  dbms_aq.message_properties_t;
-    l_first_dequeue       boolean := true;
-    l_message_handle      raw(16);
+    l_promise_result            promise_result;
+    l_dequeue_options           dbms_aq.dequeue_options_t;
+    l_message_properties        dbms_aq.message_properties_t;
+    l_first_dequeue             boolean := true;
+    l_message_handle            raw(16);
+
+    -- For all promises.
+    l_resolving_promise         promises_list_obj;
+    l_resolving_promise_o       promise;
+    l_resolved_count            number := 0;
+    l_rejected_count            number := 0;
+
+    -- For race promises
+    l_race_compare_earliest     date := sysdate;
+    l_race_earliest             date := l_race_compare_earliest;
+    l_race_earliest_promise     promise;
 
     -- Exceptions
-    l_exception_timeout   exception;
+    l_exception_timeout         exception;
     pragma exception_init(l_exception_timeout, -25228);
 
   begin
 
       if self.state = 'pending' then
 
-        loop
-          -- non-destructive dequeue
-          l_dequeue_options.dequeue_mode := dbms_aq.browse;
-          l_dequeue_options.wait := dbms_aq.no_wait;
-          l_dequeue_options.visibility := dbms_aq.immediate;
-          if l_first_dequeue then
-            l_dequeue_options.navigation := dbms_aq.first_message;
-          else
-            l_dequeue_options.navigation := dbms_aq.next_message;
-          end if;
-
-          -- dequeue
-          dbms_aq.dequeue(
-            queue_name              =>    'promise_async_queue'
-            , dequeue_options       =>    l_dequeue_options
-            , message_properties    =>    l_message_properties
-            , payload               =>    l_promise_result
-            , msgid                 =>    l_message_handle
-          );
-
-          if l_first_dequeue then
-            l_first_dequeue := false;
-          end if;
-
-          if l_promise_result.promise_name = self.promise_name then
-            -- Set value or rejection. We have the result.
-            if l_promise_result.promise_result = 'SUCCESS' then
-              -- Set state to fulfilled and set the result value.
-              -- self.set_state('fulfilled', l_promise_result.promise_value);
-              self.state := 'fulfilled';
-              self.val := l_promise_result.promise_value;
-              self.typeval := l_promise_result.promise_typeval;
-            elsif l_promise_result.promise_result = 'FAILURE' then
-              -- Set state to rejected and set the rejection result.
-              self.state := 'rejected';
-              self.val := l_promise_result.promise_value;
-              self.typeval := l_promise_result.promise_typeval;
+        if self.all_flag = 1 or self.race_flag = 1 then
+          if self.o_executor_val.getObject(l_resolving_promise) = dbms_types.success then
+            for i in 1..l_resolving_promise.promise_list.count loop
+              if l_resolving_promise.promise_list(i).getObject(l_resolving_promise_o) = dbms_types.success then
+                l_resolving_promise_o.check_and_set_value;
+                if l_resolving_promise_o.state = 'fulfilled' then
+                  if l_resolving_promise_o.state_time < l_race_earliest then
+                    l_race_earliest := l_resolving_promise_o.state_time;
+                    l_race_earliest_promise := l_resolving_promise_o;
+                  end if;
+                  l_resolved_count := l_resolved_count + 1;
+                elsif l_resolving_promise_o.state = 'rejected' then
+                  if l_resolving_promise_o.state_time < l_race_earliest then
+                    l_race_earliest := l_resolving_promise_o.state_time;
+                    l_race_earliest_promise := l_resolving_promise_o;
+                  end if;
+                  l_rejected_count := l_rejected_count + 1;
+                end if;
+                l_resolving_promise.promise_list(i) := sys.anydata.convertObject(l_resolving_promise_o);
+                self.o_executor_val := sys.anydata.convertObject(l_resolving_promise);
+              end if;
+            end loop;
+            if self.race_flag = 1 then
+              if l_race_earliest < l_race_compare_earliest then
+                if l_race_earliest_promise.state = 'rejected' then
+                  self.state := 'rejected';
+                else
+                  self.state := 'fulfilled';
+                end if;
+                self.typeval := l_race_earliest_promise.typeval;
+                self.val := l_race_earliest_promise.val;
+              end if;
+            elsif self.all_flag = 1 then
+              if l_rejected_count > 0 and (l_rejected_count + l_resolved_count) = l_resolving_promise.promise_list.count then
+                self.state := 'rejected';
+                self.typeval := 84;
+                self.val := self.o_executor_val;
+              elsif l_resolved_count = l_resolving_promise.promise_list.count then
+                self.state := 'fulfilled';
+                self.typeval := 84;
+                self.val := self.o_executor_val;
+              end if;
             end if;
           end if;
-        end loop;
+        else
+          loop
+            -- non-destructive dequeue
+            l_dequeue_options.dequeue_mode := dbms_aq.browse;
+            l_dequeue_options.wait := dbms_aq.no_wait;
+            l_dequeue_options.visibility := dbms_aq.immediate;
+            if l_first_dequeue then
+              l_dequeue_options.navigation := dbms_aq.first_message;
+            else
+              l_dequeue_options.navigation := dbms_aq.next_message;
+            end if;
 
+            -- dequeue
+            dbms_aq.dequeue(
+              queue_name              =>    'promise_async_queue'
+              , dequeue_options       =>    l_dequeue_options
+              , message_properties    =>    l_message_properties
+              , payload               =>    l_promise_result
+              , msgid                 =>    l_message_handle
+            );
+
+            if l_first_dequeue then
+              l_first_dequeue := false;
+            end if;
+
+            if l_promise_result.promise_name = self.promise_name then
+              -- Set value or rejection. We have the result.
+              if l_promise_result.promise_result = 'SUCCESS' then
+                -- Set state to fulfilled and set the result value.
+                -- self.set_state('fulfilled', l_promise_result.promise_value);
+                self.state := 'fulfilled';
+                self.state_time := l_message_properties.enqueue_time;
+                self.val := l_promise_result.promise_value;
+                self.typeval := l_promise_result.promise_typeval;
+              elsif l_promise_result.promise_result = 'FAILURE' then
+                -- Set state to rejected and set the rejection result.
+                self.state := 'rejected';
+                self.state_time := l_message_properties.enqueue_time;
+                self.val := l_promise_result.promise_value;
+                self.typeval := l_promise_result.promise_typeval;
+              end if;
+            end if;
+          end loop;
+        end if;
       end if;
 
       exception
@@ -546,12 +654,12 @@ create or replace type body promise as
     if self.state = 'pending' then
       if resolved_val.state = 'fulfilled' then
         if all_idx is not null and self.all_flag = 1 then
-          if self.val.getObject(l_resolving_promise) = dbms_types.success then
+          if self.o_executor_val.getObject(l_resolving_promise) = dbms_types.success then
             if l_resolving_promise.promise_list.exists(all_idx) then
               if l_resolving_promise.promise_list(all_idx).getObject(l_resolving_promise_o) = dbms_types.success then
                 l_resolving_promise_o.resolve(resolved_val);
                 l_resolving_promise.promise_list(all_idx) := sys.anydata.convertObject(l_resolving_promise_o);
-                self.val := sys.anydata.convertObject(l_resolving_promise);
+                self.o_executor_val := sys.anydata.convertObject(l_resolving_promise);
               end if;
             end if;
           end if;
@@ -560,7 +668,7 @@ create or replace type body promise as
           self.typeval := resolved_val.typeval;
           self.val := resolved_val.val;
           self.state := 'fulfilled';
-          self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
+          self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, self.promise_class, null, null, null));
           self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
         end if;
       elsif resolved_val.state = 'rejected' then
@@ -589,12 +697,12 @@ create or replace type body promise as
 
     if self.state = 'pending' then
       if all_idx is not null and self.all_flag = 1 then
-        if self.val.getObject(l_resolving_promise) = dbms_types.success then
+        if self.o_executor_val.getObject(l_resolving_promise) = dbms_types.success then
           if l_resolving_promise.promise_list.exists(all_idx) then
             if l_resolving_promise.promise_list(all_idx).getObject(l_resolving_promise_o) = dbms_types.success then
               l_resolving_promise_o.resolve(resolved_val);
               l_resolving_promise.promise_list(all_idx) := sys.anydata.convertObject(l_resolving_promise_o);
-              self.val := sys.anydata.convertObject(l_resolving_promise);
+              self.o_executor_val := sys.anydata.convertObject(l_resolving_promise);
             end if;
           end if;
         end if;
@@ -603,7 +711,7 @@ create or replace type body promise as
         self.state := 'fulfilled';
         self.typeval := 1;
         self.val := sys.anydata.convertnumber(resolved_val);
-        self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
+        self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, self.promise_class, null, null, null));
         self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
       end if;
     else
@@ -627,12 +735,12 @@ create or replace type body promise as
 
     if self.state = 'pending' then
       if all_idx is not null and self.all_flag = 1 then
-        if self.val.getObject(l_resolving_promise) = dbms_types.success then
+        if self.o_executor_val.getObject(l_resolving_promise) = dbms_types.success then
           if l_resolving_promise.promise_list.exists(all_idx) then
             if l_resolving_promise.promise_list(all_idx).getObject(l_resolving_promise_o) = dbms_types.success then
               l_resolving_promise_o.resolve(resolved_val);
               l_resolving_promise.promise_list(all_idx) := sys.anydata.convertObject(l_resolving_promise_o);
-              self.val := sys.anydata.convertObject(l_resolving_promise);
+              self.o_executor_val := sys.anydata.convertObject(l_resolving_promise);
             end if;
           end if;
         end if;
@@ -641,7 +749,7 @@ create or replace type body promise as
         self.state := 'fulfilled';
         self.typeval := 2;
         self.val := sys.anydata.convertvarchar2(resolved_val);
-        self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
+        self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, self.promise_class, null, null, null));
         self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
       end if;
     else
@@ -665,12 +773,12 @@ create or replace type body promise as
 
     if self.state = 'pending' then
       if all_idx is not null and self.all_flag = 1 then
-        if self.val.getObject(l_resolving_promise) = dbms_types.success then
+        if self.o_executor_val.getObject(l_resolving_promise) = dbms_types.success then
           if l_resolving_promise.promise_list.exists(all_idx) then
             if l_resolving_promise.promise_list(all_idx).getObject(l_resolving_promise_o) = dbms_types.success then
               l_resolving_promise_o.resolve(resolved_val);
               l_resolving_promise.promise_list(all_idx) := sys.anydata.convertObject(l_resolving_promise_o);
-              self.val := sys.anydata.convertObject(l_resolving_promise);
+              self.o_executor_val := sys.anydata.convertObject(l_resolving_promise);
             end if;
           end if;
         end if;
@@ -679,7 +787,7 @@ create or replace type body promise as
         self.state := 'fulfilled';
         self.typeval := 4;
         self.val := sys.anydata.convertdate(resolved_val);
-        self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, null, null, null));
+        self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'SUCCESS', self.typeval, self.val, self.promise_class, null, null, null));
         self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'SUCCESS'));
       end if;
     else
@@ -691,19 +799,35 @@ create or replace type body promise as
   member procedure reject(
     self              in out    promise
     , rejection                 varchar2
+    , all_idx                   number default null
   )
 
   as
 
+    l_resolving_promise         promises_list_obj;
+    l_resolving_promise_o       promise;
+
   begin
 
     if self.state = 'pending' then
-      self.o_execute := 1;
-      self.state := 'rejected';
-      self.typeval := 2;
-      self.val := sys.anydata.convertvarchar2(rejection);
-      self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'FAILURE', self.typeval, self.val, null, null, null));
-      self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'FAILURE'));
+      if all_idx is not null and self.all_flag = 1 then
+        if self.o_executor_val.getObject(l_resolving_promise) = dbms_types.success then
+          if l_resolving_promise.promise_list.exists(all_idx) then
+            if l_resolving_promise.promise_list(all_idx).getObject(l_resolving_promise_o) = dbms_types.success then
+              l_resolving_promise_o.reject(rejection);
+              l_resolving_promise.promise_list(all_idx) := sys.anydata.convertObject(l_resolving_promise_o);
+              self.o_executor_val := sys.anydata.convertObject(l_resolving_promise);
+            end if;
+          end if;
+        end if;
+      else
+        self.o_execute := 1;
+        self.state := 'rejected';
+        self.typeval := 2;
+        self.val := sys.anydata.convertvarchar2(rejection);
+        self.result_enqueue('promise_async_queue', promise_result(self.promise_name, 'FAILURE', self.typeval, self.val, self.promise_class, null, null, null));
+        self.job_enqueue('promise_job_queue', promise_job_notify(self.promise_name, 'FAILURE'));
+      end if;
     else
       raise_application_error(-20042, 'promises cannot be rejected if already resolved or rejected');
     end if;
@@ -746,7 +870,11 @@ create or replace type body promise as
       if self.state = 'pending' then
         l_ret_val := null;
       else
-        l_ret_val := sys.anydata.accessNumber(self.val);
+        if self.all_flag != 1 then
+          l_ret_val := sys.anydata.accessNumber(self.val);
+        else
+          raise_application_error(-20042, 'getvalue_number not supported for promise with all method called');
+        end if;
       end if;
       return l_ret_val;
     else
@@ -770,7 +898,11 @@ create or replace type body promise as
       if self.state = 'pending' then
         l_ret_val := null;
       else
-        l_ret_val := sys.anydata.accessVarchar2(self.val);
+        if self.all_flag != 1 then
+          l_ret_val := sys.anydata.accessVarchar2(self.val);
+        else
+          raise_application_error(-20042, 'getvalue_varchar not supported for promise with all method called');
+        end if;
       end if;
       return l_ret_val;
     else
@@ -794,7 +926,11 @@ create or replace type body promise as
       if self.state = 'pending' then
         l_ret_val := null;
       else
-        l_ret_val := sys.anydata.accessDate(self.val);
+        if self.all_flag != 1 then
+          l_ret_val := sys.anydata.accessDate(self.val);
+        else
+          raise_application_error(-20042, 'getvalue_date not supported for promise with all method called');
+        end if;
       end if;
       return l_ret_val;
     else
