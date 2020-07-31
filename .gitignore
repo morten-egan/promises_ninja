@@ -1,6 +1,11 @@
-# Ignore list
-*.py[cod]
-.qs_env
-*.sublime-project
-.qs_commands
 temp/
+
+*.py[cod]
+
+.qs_*
+
+promises_workspace.code-workspace
+
+.vscode/
+
+_*
