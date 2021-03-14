@@ -9,3 +9,6 @@ promises_workspace.code-workspace
 .vscode/
 
 _*
+
+# QS
+.qs/

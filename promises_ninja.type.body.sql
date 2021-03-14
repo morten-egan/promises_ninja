@@ -16,7 +16,7 @@ create or replace type body promise as
     self.chain_size := 0;
     self.all_flag := 0;
     self.race_flag := 0;
-    self.promise_class = null;
+    self.promise_class := null;
 
     return;
 
@@ -42,7 +42,7 @@ create or replace type body promise as
     self.chain_size := 0;
     self.all_flag := 0;
     self.race_flag := 0;
-    self.promise_class = promise_class;
+    self.promise_class := promise_class;
 
     self.validate_p();
 
@@ -74,7 +74,7 @@ create or replace type body promise as
     self.chain_size := 0;
     self.all_flag := 0;
     self.race_flag := 0;
-    self.promise_class = promise_class;
+    self.promise_class := promise_class;
 
     self.validate_p();
 
@@ -106,7 +106,7 @@ create or replace type body promise as
     self.chain_size := 0;
     self.all_flag := 0;
     self.race_flag := 0;
-    self.promise_class = promise_class;
+    self.promise_class := promise_class;
 
     self.validate_p();
 
@@ -138,7 +138,7 @@ create or replace type body promise as
     self.chain_size := 0;
     self.all_flag := 0;
     self.race_flag := 0;
-    self.promise_class = promise_class;
+    self.promise_class := promise_class;
 
     self.validate_p();
 
